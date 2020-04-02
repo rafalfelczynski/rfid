@@ -15,12 +15,20 @@ import threading
 
 
 def clear():
+    """
+    Metoda czyszcząca okno terminala w którym działa aplikacja
+    :return:
+    """
     system('clear' if os.name == 'posix' else 'cls')
     sys.stdout.write('\033[2K\033[1G')
     pass
 
 
 def flushInput():
+    """
+    metoda usuwająca wprowadzone przez użytkownika dane w terminalu
+    :return:
+    """
     sys.stdout.write('\033[2K\033[1G')
     tcflush(sys.stdin, TCIOFLUSH)
     pass
@@ -32,11 +40,16 @@ ACCEPTED_KEYS = [Key.up, Key.down, Key.esc, Key.right, KeyCode.from_char("k")]
 class Menu:
 
     def __init__(self, _server, localisation):
+        """
+        konstruktor klasy
+        :param _server: obiekt klasy Server
+        :param localisation: lokaliacja terminala
+        """
         self.curInd = 0
         self.enterClicked = False
         self.acceptKeyboard = True
         self.isRunning = False
-        self._server = Server() # _server
+        self._server = _server
         self.options = [("\t1. Dodaj pracownika", self.__addEmployee),
                         ("\t2. Usuń pracownika", self.__removeEmployee),
                         ("\t3. Pokaż pracowników", self.__printEmployees),
@@ -59,7 +72,11 @@ class Menu:
 
     pass
 
-    def printMenu(self):
+    def __printMenu(self):
+        """
+        Metoda wypisująca na ekranie menu aplikacji
+        :return: void
+        """
         optionsTemp = self.options.copy()
         optionsTemp[self.curInd] = ("==>" + optionsTemp[self.curInd][0], optionsTemp[self.curInd][1])
         print("Zmień opcje strzałkami góra/doł. Zatwierdź strzałką w prawo. Aby wyjśc wcisnij Esc")
@@ -68,21 +85,33 @@ class Menu:
     pass
 
     def start(self):
+        """
+        Metoda rozpoczynająca prace aplikacji
+        :return:
+        """
         self.isRunning = True
         if not (self.listener.is_alive()):
             self.listener.start()
         clear()
-        self.printMenu()
+        self.__printMenu()
         self.main()
 
-    def menuUp(self):
+    def __menuUp(self):
+        """
+        Metoda przesuwająca wybór opcji o 1 w góre
+        :return: void
+        """
         if self.curInd == 0:
             self.curInd = len(self.options) - 1
         else:
             self.curInd -= 1
     pass
 
-    def menuDown(self):
+    def __menuDown(self):
+        """
+        Metoda przesuwająca wybór opcji o 1 w dol
+        :return:
+        """
         if self.curInd == len(self.options) - 1:
             self.curInd = 0
         else:
@@ -90,14 +119,18 @@ class Menu:
 
     pass
 
-    def choose(self):
+    def __choose(self):
+        """
+        Metoda wykonująca funkcje skorelowaną z wybraną przez użytkownika opcją
+        :return:
+        """
         self.listener.stop()
         self.acceptKeyboard = False
         function = self.options[self.curInd][1]
         clear()
         flushInput()
         function()
-        self.printMenu()
+        self.__printMenu()
         self.acceptKeyboard = True
         self.listener = Listener(on_press=self.on_press, on_release=self.on_release)
         self.listener.setDaemon(True)
@@ -107,6 +140,10 @@ class Menu:
     pass
 
     def __addEmployee(self):
+        """
+        Metoda do dodawania nowego użytkownika
+        :return:
+        """
         pesel = input("Podaj pesel pracownika... ")
         name = input("Podaj imię pracownika... ")
         surname = input("Podaj nazwisko pracownika... ")
@@ -118,6 +155,10 @@ class Menu:
     pass
 
     def __removeEmployee(self):
+        """
+        Metoda do usuwania użytkownika
+        :return:
+        """
         pesel = input("Podaj pesel pracownika... ")
         res = self._server.removeEmployee(pesel)
         if res:
@@ -127,6 +168,10 @@ class Menu:
     pass
 
     def __addTerminal(self):
+        """
+        Metoda do dodawania terminala
+        :return:
+        """
         localisation = input("Podaj lokalizację terminala... ")
         res = self._server.addTerminal(localisation)
         if res:
@@ -136,6 +181,10 @@ class Menu:
     pass
 
     def __removeTerminal(self):
+        """
+        Metoda do usuwania terminala
+        :return:
+        """
         localisation = input("Podaj lokalizację terminala... ")
         res = self._server.removeTerminal(localisation)
         if res:
@@ -145,6 +194,13 @@ class Menu:
         pass
 
     def __waitPress(self, key, di):
+        """
+        Metoda chwilowego listenera klawiatury, który uaktywniany jest przy dodawaniu nowej karty lub przypisywaniu karty do pracownika.
+        Metoda ta akceptuje tylko przycisk K i esc, wywoływana jest tylko raz
+        :param key: klawisz wcisniety
+        :param di: slownik ze zmienną typu bool, wskazująca czy wycofano się ze zczytywania karty
+        :return: False - kończy prace listneera
+        """
         if key == KeyCode.from_char("k"):
             return False  # stops listener
         if key == Key.esc:
@@ -153,6 +209,10 @@ class Menu:
     pass
 
     def __waitForCard(self):
+        """
+        Metoda oczekująca na wcisniecie klawisza k, symulującego przylozenie karty do czytnika
+        :return: numer zczytanej akrty lub None w przypadku rezygnacji
+        """
         cardPresent = False
         di = {"quitted": False}
         listener = Listener(on_press=lambda key: self.__waitPress(key, di), on_release=None)
@@ -174,9 +234,17 @@ class Menu:
     pass
 
     def __readCard(self):
+        """
+        metoda przypisująca numer karty do ostatnio zczytanej karty
+        :return:
+        """
         self.lastCard = random.randint(0, 5)
 
     def __addCardWAss(self):
+        """
+        Metoda dodająca karte do systemu bez przypisywania jej do pracownika
+        :return:
+        """
         cardId = self.__waitForCard()
         if cardId is not None:
             res = self._server.addCard(cardId)
@@ -187,6 +255,10 @@ class Menu:
     pass
 
     def __removeCard(self):
+        """
+        metoda usuwająca karte z systemu
+        :return:
+        """
         cardId = self.__waitForCard()
         if cardId is not None:
             res = self._server.removeCard(cardId)
@@ -196,6 +268,10 @@ class Menu:
                 print("Brak w systemie karty o numerze ", cardId)
 
     def __assignCard(self):
+        """
+        Metoda do przypisania karty danemu pracownikowi
+        :return:
+        """
         flushInput()
         pesel = input("Podaj pesel pracownika... ")
         cardId = self.__waitForCard()
@@ -239,6 +315,10 @@ class Menu:
     pass
 
     def __removeCardAssignment(self):
+        """
+        Metoda do usuwania przypisania karty do pracownika
+        :return:
+        """
         cardId = self.__waitForCard()
         if cardId is not None:
             res = self._server.removeCardAssignment(cardId)
@@ -249,12 +329,22 @@ class Menu:
             pass
 
     def __dateSubs(self, dateStr1, dateStr2):
+        """
+        Metoda odejmująca od siebie 2 daty sformatowane w string o konkretnym formacie
+        :param dateStr1: data1 - odjemna
+        :param dateStr2: data2 - odjemnik
+        :return: liczba godzin między dwiema datami
+        """
         start = datetime.strptime(dateStr2, "%y/%m/%d %H:%M:%S")
         end = datetime.strptime(dateStr1, "%y/%m/%d %H:%M:%S")
         delta = end - start
         return delta.total_seconds()/3600
 
     def __generateReport(self):
+        """
+        Metoda do generowania raportu pracy pracownika
+        :return:
+        """
         print("Generowanie raportu...")
         pesel = input("Podaj pesel pracownika... ")
         logs = self._server.generateReport(pesel)
@@ -276,6 +366,10 @@ class Menu:
     pass
 
     def __printEmployees(self):
+        """
+        Metoda wypisująca dostepnych pracowników
+        :return:
+        """
         li = self._server.getEmployees()
         if len(li) != 0:
             for i in range(0, len(li)):
@@ -285,6 +379,10 @@ class Menu:
     pass
 
     def __printTerminals(self):
+        """
+        Metoda wypisująca dostępne terminale
+        :return:
+        """
         li = self._server.getTerminals()
         if len(li) != 0:
             for i in range(0, len(li)):
@@ -294,6 +392,10 @@ class Menu:
     pass
 
     def __printCards(self):
+        """
+        Metoda wypisująca wszystkie dostępne w systemie karty
+        :return:
+        """
         li = self._server.getCards()
         if len(li) != 0:
             for i in range(0, len(li)):
@@ -302,6 +404,10 @@ class Menu:
             print("Brak kart")
 
     def __genRepUnkCards(self):
+        """
+        Metoda do generowania raportu użycia kart, których nie ma w systemie
+        :return:
+        """
         logs = self._server.getUnknownCards()
         if logs is not None:
             timeStr = datetime.now().strftime("%y.%m.%d godz. %H.%M.%S")
@@ -316,16 +422,30 @@ class Menu:
             print("Brak raportu do wygenerowania")
 
     def on_press(self, key):
+        """
+        Metoda wykonywana przy nacisnieciu przycisku na klawiaturze
+        :param key: przycisk wcisniety
+        :return:
+        """
         if self.acceptKeyboard:
             if ACCEPTED_KEYS.__contains__(key):
                 self.keys.append(key)
     pass
 
     def on_release(self, key):
+        """
+        Metoda waykonywana przy zwalnianiu przycisniecia przycisku
+        :param key: przycisk ktory byl wcisniety
+        :return:
+        """
         return True
     pass
 
     def main(self):
+        """
+        Główna metoda programu. BusyLoop. Obsługuje kolejne przycisniecia przycisku i logi kart
+        :return:
+        """
         while self.isRunning:
             try:
                 self.processNextKey()
@@ -337,17 +457,21 @@ class Menu:
     pass
 
     def processNextKey(self):
+        """
+        Metoda obsługująca kolejne nacisniecia przycisków
+        :return:
+        """
         if len(self.keys) > 0:
             key = self.keys[0]
             if not self.enterClicked:
                 if key == Key.up:
-                    self.menuUp()
+                    self.__menuUp()
                     clear()
-                    self.printMenu()
+                    self.__printMenu()
                 elif key == Key.down:
-                    self.menuDown()
+                    self.__menuDown()
                     clear()
-                    self.printMenu()
+                    self.__printMenu()
                 elif key == Key.esc:
                     self.isRunning = False
                     self.listener.stop()
@@ -360,22 +484,27 @@ class Menu:
                     self.__readCard()
             else:
                 if key == Key.right:
-                    self.choose()
+                    self.__choose()
                 else:
                     flushInput()
                     clear()
                     print("\nRezygnacja")
-                    self.printMenu()
+                    self.__printMenu()
                 self.enterClicked = False
             self.keys.pop(0)
     pass
 
     def __logCard(self):
+        """
+        Metoda obslugująca zczytywaną karte
+        :return:
+        """
         if self.lastCard is not None:
             print(self.lastCard)
             self._server.logCard(self.lastCard, self.localisation)
             self.lastCard = None
     pass
+
 
 pass
 

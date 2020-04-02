@@ -4,12 +4,19 @@ from datetime import datetime
 
 class Server:
 
-    def __init__(self, ):
+    def __init__(self):
+        """
+        Konstruktor obiektu. Tworzy bazę danych i tabele, jesli nie istnieją
+        """
         self.__dbname = "server_database.db"
         self.__createTables()
         pass
 
     def __createTables(self):
+        """
+        Metoda tworząca tabele z pracownikami, terminalami, kartami i logami uzycia kart
+        :return:
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS EMPLOYEES(PESEL INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -31,6 +38,10 @@ class Server:
         pass
 
     def getEmployee(self, pesel):
+        """
+        :param pesel: pesel pracownika
+        :return: dane pracownika z bazy, jeśli istnieje lub None, jeśli nie
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         res = cursor.execute("SELECT * FROM EMPLOYEES WHERE PESEL = ?", (pesel,)).fetchone()
@@ -39,6 +50,9 @@ class Server:
         return res
 
     def getEmployees(self):
+        """
+        :return: lista wszystkich pracowników
+        """
         connection = sqlite3.connect(self.__dbname)
         stmt = "SELECT PESEL, NAME, SURNAME FROM EMPLOYEES"
         cursor = connection.cursor()
@@ -50,6 +64,13 @@ class Server:
     pass
 
     def addEmployee(self, pesel, name, surname):
+        """
+        Metoda dodająca pracownika do bazy
+        :param pesel: pesel pracownika
+        :param name: imie pracownika
+        :param surname: nazwisko pracownika
+        :return: True jesli dodano pracownika, False jeśli pracownik już istnieje w bazie
+        """
         if self.getEmployee(pesel) is None:
             name = name.upper().strip()
             surname = surname.upper().strip()
@@ -65,6 +86,11 @@ class Server:
     pass
 
     def removeEmployee(self, pesel):
+        """
+        Metoda usuwająca pracownika z bazy danych
+        :param pesel:
+        :return: True jeśli udało się usunąć pracownika, False jeśli pracownik nie istnieje
+        """
         cardIds = self.__getEmployeeCardIds(pesel)
         if cardIds is not None:
             for i in range(0, len(cardIds)):
@@ -83,6 +109,11 @@ class Server:
         pass
 
     def addTerminal(self, localisation):
+        """
+        Metoda dodająca nowy terminal do bazy
+        :param localisation: lokalizacja (traktowana jako unikalna nazwa) terminala
+        :return: True jesli dodano terminal, False jesli juz istnieje
+        """
         localisation = localisation.upper().strip()
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
@@ -98,11 +129,20 @@ class Server:
         pass
 
     def removeTerminal(self, localisation):
+        """
+        Metoda usuwająca terminal z bazy
+        :param localisation: lokalizacja terminala (unikalna nazwa)
+        :return: True jesli usunieto, False jesli nie nistnieje
+        """
         localisation = localisation.upper().strip()
         return self.__removeHelp("DELETE FROM TERMINALS WHERE LOCALISATION = ?", (localisation,))
         pass
 
     def getTerminals(self):
+        """
+        Metoda do pobierania danych o wszystkich obecnych terminalach
+        :return: lista danych terminali
+        """
         connection = sqlite3.connect(self.__dbname)
         stmt = "SELECT * FROM TERMINALS"
         cursor = connection.cursor()
@@ -114,6 +154,13 @@ class Server:
     pass
 
     def assignCard(self, cardId, pesel):
+        """
+        Metoda do przypisania danej karty do pracownika
+        :param cardId: nr karty
+        :param pesel: pesel pracownika
+        :return: 0 jeśli wszystko się udało, -1 jeśli karta jest już przypisana do tego pracownika,
+            -2 jesli karta ma innego wlasciciela, -3 jesli karta nie istnieje, -4 jesli pracownik nie istnieje
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         if self.getEmployee(pesel) is not None:  # jesli pracownik istnieje
@@ -136,6 +183,11 @@ class Server:
         pass
 
     def addCard(self, cardId):
+        """
+        Metoda dodająca do bazy nową karte bez przypisania pracownika
+        :param cardId: numer karty
+        :return: True jesli dodano kartę, False jesli karta juz istnieje
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cursor.execute("SELECT * FROM CARDS WHERE CARD_ID = ?", (cardId,))
@@ -149,14 +201,28 @@ class Server:
             return False
 
     def removeCard(self, cardId):
+        """
+        Metoda usuwająca karte z bazy
+        :param cardId: nr karty
+        :return: True jesli usunieto, False jestli karta nie istnieje
+        """
         return self.__removeHelp("DELETE FROM CARDS WHERE CARD_ID = ?", str(cardId))
     pass
 
     def removeCardAssignment(self, cardId):
+        """
+        Metoda usuwająca przypisanie pracownika do karty
+        :param cardId: nr karty
+        :return: True jesli usunieto przypisanie, False jesli karta nie istnieje
+        """
         return self.__removeHelp("UPDATE CARDS SET EMPLOYEE_PESEL = ? WHERE CARD_ID = ?", (None, str(cardId)))
     pass
 
     def getCards(self):
+        """
+        Metoda pobierająca z bazy dane o kartach
+        :return: lista dostepnych kart
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cursor.execute("SELECT * FROM CARDS")
@@ -166,6 +232,10 @@ class Server:
         return res
 
     def getUnknownCards(self):
+        """
+        Metoda pobierająca z bazy dane o użyciu nieznanych systemowi kart
+        :return: lista logów dotyczących kart, ktorych nie ma w systemie
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cursor.execute("SELECT CARD_ID, TERMINAL_ID, TIME FROM UNKNOWN_CARDS")
@@ -184,6 +254,11 @@ class Server:
             return None
 
     def __getEmployeeCardIds(self, pesel):
+        """
+        Metoda pobierająca z bazy karty należące do danego pracownika
+        :param pesel: pesel pracownika
+        :return: lista kart pracownika lub None, jesli nie posiada zadnych kart
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cardIds = cursor.execute("SELECT CARD_ID FROM CARDS WHERE EMPLOYEE_PESEL = ?", (pesel,)).fetchall()
@@ -195,6 +270,11 @@ class Server:
             return None
 
     def generateReport(self, pesel):
+        """
+        Metoda pobierająca dane z bazy do raportu czasu pracy pracownika
+        :param pesel: pesel pracownika
+        :return: lista logów kart pracownika lub None, jesli pracownik nie istnieje lub logi są puste
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         if self.getEmployee(pesel) is not None:
@@ -221,6 +301,11 @@ class Server:
     pass
 
     def getCard(self, cardId):
+        """
+        Metoda sprawdzająca czy karta istnieje w systemie
+        :param cardId:
+        :return: id karty i nr pracownika lub none, jesli karta nie istnieje
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         res = cursor.execute("SELECT * FROM CARDS WHERE CARD_ID = ?", (str(cardId),)).fetchone()
@@ -228,6 +313,12 @@ class Server:
     pass
 
     def logCard(self, cardId, localisation):
+        """
+        metoda zapisująca czas użycia karty w terminalu i dane o karcie
+        :param cardId: nr karty
+        :param localisation: lokalizacja(nazwa) terminala
+        :return: void
+        """
         localisation = localisation.upper().strip()
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
@@ -247,6 +338,12 @@ class Server:
     pass
 
     def __removeHelp(self, str, args):
+        """
+        metoda pomocnicza do usuwania danych z bazy
+        :param str: SQL string
+        :param args: argumenty klauzul SQL stringa
+        :return: True jesli coś usunięto, False jeśli nie
+        """
         connection = sqlite3.connect(self.__dbname)
         cursor = connection.cursor()
         cursor.execute(str, args)
