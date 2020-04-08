@@ -1,358 +1,491 @@
-import sqlite3
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from pynput.keyboard import Key, Listener, KeyCode
+from os import system
+import os
+import time
+import sys
+import random
+from termios import tcflush, TCIOFLUSH
+import csv
 from datetime import datetime
+import paho.mqtt.client as mqtt
+import serverlogs
+from dbserver import DBServer
+import threading
+
+
+def clear():
+    """
+    Metoda czyszcząca okno terminala w którym działa aplikacja
+    :return:
+    """
+    system('clear' if os.name == 'posix' else 'cls')
+    sys.stdout.write('\033[2K\033[1G')
+    pass
+
+
+def flushInput():
+    """
+    metoda usuwająca wprowadzone przez użytkownika dane w terminalu
+    :return:
+    """
+    sys.stdout.write('\033[2K\033[1G')
+    tcflush(sys.stdin, TCIOFLUSH)
+    pass
+
+
+ACCEPTED_KEYS = [Key.up, Key.down, Key.esc, Key.right]
+TOPIC = "cardId"
 
 
 class Server:
 
-    def __init__(self):
+    def __init__(self, dbserver, broker):
         """
-        Konstruktor obiektu. Tworzy bazę danych i tabele, jesli nie istnieją
+        konstruktor klasy
+        :param dbserver: obiekt klasy Server
         """
-        self.__dbname = "server_database.db"
-        self.__createTables()
-        pass
-
-    def __createTables(self):
-        """
-        Metoda tworząca tabele z pracownikami, terminalami, kartami i logami uzycia kart
-        :return:
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS EMPLOYEES(PESEL INTEGER PRIMARY KEY AUTOINCREMENT,"
-                       " NAME VARCHAR, SURNAME VARCHAR)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS TERMINALS(ID INTEGER PRIMARY KEY AUTOINCREMENT,"
-                       " LOCALISATION VARCHAR)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS LOGS(ID INTEGER PRIMARY KEY AUTOINCREMENT, TERMINAL_ID INTEGER,"
-                       " EMPLOYEE_PESEL INTEGER, TIME DATE, FOREIGN KEY(TERMINAL_ID) REFERENCES TERMINALS(ID),"
-                       " FOREIGN KEY(EMPLOYEE_PESEL) REFERENCES EMPLOYEES(PESEL))")
-        cursor.execute("CREATE TABLE IF NOT EXISTS CARDS(CARD_ID VARCHAR PRIMARY KEY,"
-                       " EMPLOYEE_PESEL INTEGER, FOREIGN KEY(EMPLOYEE_PESEL) REFERENCES EMPLOYEES(PESEL))")
-        cursor.execute("CREATE TABLE IF NOT EXISTS UNKNOWN_CARDS(ID INTEGER PRIMARY KEY AUTOINCREMENT, CARD_ID VARCHAR,"
-                       " TERMINAL_ID INTEGER, TIME DATE, FOREIGN KEY(CARD_ID) REFERENCES CARDS(CARD_ID),"
-                       " FOREIGN KEY(TERMINAL_ID) REFERENCES TERMINALS(ID))")
-        cursor.execute("CREATE TABLE IF NOT EXISTS EMPLOYEES_REMOVED(ID INTEGER PRIMARY KEY AUTOINCREMENT, EMPLOYEE_PESEL INTEGER, NAME VARCHAR, SURNAME VARCHAR)")
-        connection.commit()
-        cursor.close()
-        connection.close()
-        pass
-
-    def getEmployee(self, pesel):
-        """
-        :param pesel: pesel pracownika
-        :return: dane pracownika z bazy, jeśli istnieje lub None, jeśli nie
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        res = cursor.execute("SELECT * FROM EMPLOYEES WHERE PESEL = ?", (pesel,)).fetchone()
-        cursor.close()
-        connection.close()
-        return res
-
-    def getEmployees(self):
-        """
-        :return: lista wszystkich pracowników
-        """
-        connection = sqlite3.connect(self.__dbname)
-        stmt = "SELECT PESEL, NAME, SURNAME FROM EMPLOYEES"
-        cursor = connection.cursor()
-        cursor.execute(stmt)
-        workers = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        return workers
+        self.__curInd = 0
+        self.__enterClicked = False
+        self.__acceptKeyboard = True
+        self.__isRunning = False
+        self.__dbserver = dbserver
+        self.__options = [("\t1. Dodaj pracownika", self.__addEmployee),
+                          ("\t2. Usuń pracownika", self.__removeEmployee),
+                          ("\t3. Pokaż pracowników", self.__printEmployees),
+                          ("\t4. Dodaj terminal RFID", self.__addTerminal),
+                          ("\t5. Usuń terminal RFID", self.__removeTerminal),
+                          ("\t6. Pokaż terminale", self.__printTerminals),
+                          ("\t7. Dodaj kartę", self.__addCardWAss),
+                          ("\t8. Usuń kartę", self.__removeCard),
+                          ("\t9. Przypisz kartę do pracownika", self.__assignCard),
+                          ("\t10. Pokaż karty", self.__printCards),
+                          ("\t11. Usuń przypisanie karty do pracownika", self.__removeCardAssignment),
+                          ("\t12. Generuj raport czasu pracy pracownika", self.__generateReport),
+                          ("\t13. Generuj raport logowania nieznanych kart", self.__genRepUnkCards)]
+        self.__listener = Listener(on_press=self.__on_press, on_release=self.__on_release)
+        self.__listener.setDaemon(True)
+        self.__keys = list()
+        self.__client = mqtt.Client()
+        self.__broker = broker
     pass
 
-    def addEmployee(self, pesel, name, surname):
+    def __printMenu(self):
         """
-        Metoda dodająca pracownika do bazy
-        :param pesel: pesel pracownika
-        :param name: imie pracownika
-        :param surname: nazwisko pracownika
-        :return: True jesli dodano pracownika, False jeśli pracownik już istnieje w bazie
-        """
-        if self.getEmployee(pesel) is None:
-            name = name.upper().strip()
-            surname = surname.upper().strip()
-            connection = sqlite3.connect(self.__dbname)
-            cursor = connection.cursor()
-            cursor.execute("INSERT INTO EMPLOYEES(PESEL, NAME, SURNAME) VALUES(?, ?, ?)", (pesel, name, surname))
-            connection.commit()
-            cursor.close()
-            connection.close()
-            return True
-        else:
-            return False
-    pass
-
-    def removeEmployee(self, pesel):
-        """
-        Metoda usuwająca pracownika z bazy danych
-        :param pesel:
-        :return: True jeśli udało się usunąć pracownika, False jeśli pracownik nie istnieje
-        """
-        cardIds = self.__getEmployeeCardIds(pesel)
-        if cardIds is not None:
-            for i in range(0, len(cardIds)):
-                self.removeCardAssignment(cardIds[i][0])
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        empData = cursor.execute("SELECT NAME, SURNAME FROM EMPLOYEES WHERE PESEL = ?", (pesel,)).fetchone()
-        if empData is not None:
-            cursor.execute("INSERT INTO EMPLOYEES_REMOVED(EMPLOYEE_PESEL, NAME, SURNAME) VALUES(?, ?, ?)", (pesel, empData[0], empData[1]))
-            connection.commit()
-            cursor.close()
-            connection.close()
-            return self.__removeHelp("DELETE FROM EMPLOYEES WHERE PESEL = ?", (pesel,))
-        else:
-            return False
-        pass
-
-    def addTerminal(self, localisation):
-        """
-        Metoda dodająca nowy terminal do bazy
-        :param localisation: lokalizacja (traktowana jako unikalna nazwa) terminala
-        :return: True jesli dodano terminal, False jesli juz istnieje
-        """
-        localisation = localisation.upper().strip()
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM TERMINALS WHERE LOCALISATION = ? ", (localisation,))
-        if cursor.fetchone() is None:
-            cursor.execute("INSERT INTO TERMINALS(LOCALISATION) VALUES(?)", (localisation,))
-            connection.commit()
-            cursor.close()
-            connection.close()
-            return True
-        else:
-            return False
-        pass
-
-    def removeTerminal(self, localisation):
-        """
-        Metoda usuwająca terminal z bazy
-        :param localisation: lokalizacja terminala (unikalna nazwa)
-        :return: True jesli usunieto, False jesli nie nistnieje
-        """
-        localisation = localisation.upper().strip()
-        return self.__removeHelp("DELETE FROM TERMINALS WHERE LOCALISATION = ?", (localisation,))
-        pass
-
-    def getTerminals(self):
-        """
-        Metoda do pobierania danych o wszystkich obecnych terminalach
-        :return: lista danych terminali
-        """
-        connection = sqlite3.connect(self.__dbname)
-        stmt = "SELECT * FROM TERMINALS"
-        cursor = connection.cursor()
-        cursor.execute(stmt)
-        terminals = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        return terminals
-    pass
-
-    def assignCard(self, cardId, pesel):
-        """
-        Metoda do przypisania danej karty do pracownika
-        :param cardId: nr karty
-        :param pesel: pesel pracownika
-        :return: 0 jeśli wszystko się udało, -1 jeśli karta jest już przypisana do tego pracownika,
-            -2 jesli karta ma innego wlasciciela, -3 jesli karta nie istnieje, -4 jesli pracownik nie istnieje
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        if self.getEmployee(pesel) is not None:  # jesli pracownik istnieje
-            resp = cursor.execute("SELECT * FROM CARDS WHERE CARD_ID = ?", (str(cardId),)).fetchone()
-            if resp is not None:  # jesli karta istnieje
-                if resp[1] is None:  # jesli karta nie ma wlasciciela
-                    cursor.execute("UPDATE CARDS SET EMPLOYEE_PESEL = ? WHERE CARD_ID = ?", (pesel, str(cardId)))
-                    connection.commit()
-                    cursor.close()
-                    connection.close()
-                    return 0
-                elif resp[1] == pesel:
-                    return -1  # card already assigned to this employee
-                else:
-                    return -2  # card belongs to another employee
-            else:
-                return -3  # card not exists
-        else:
-            return -4  # employee not exists
-        pass
-
-    def addCard(self, cardId):
-        """
-        Metoda dodająca do bazy nową karte bez przypisania pracownika
-        :param cardId: numer karty
-        :return: True jesli dodano kartę, False jesli karta juz istnieje
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM CARDS WHERE CARD_ID = ?", (cardId,))
-        if cursor.fetchone() is None:
-            cursor.execute("INSERT INTO CARDS(CARD_ID, EMPLOYEE_PESEL) VALUES(?, ?)", (str(cardId), None))
-            connection.commit()
-            cursor.close()
-            connection.close()
-            return True
-        else:
-            return False
-
-    def removeCard(self, cardId):
-        """
-        Metoda usuwająca karte z bazy
-        :param cardId: nr karty
-        :return: True jesli usunieto, False jestli karta nie istnieje
-        """
-        return self.__removeHelp("DELETE FROM CARDS WHERE CARD_ID = ?", str(cardId))
-    pass
-
-    def removeCardAssignment(self, cardId):
-        """
-        Metoda usuwająca przypisanie pracownika do karty
-        :param cardId: nr karty
-        :return: True jesli usunieto przypisanie, False jesli karta nie istnieje
-        """
-        return self.__removeHelp("UPDATE CARDS SET EMPLOYEE_PESEL = ? WHERE CARD_ID = ?", (None, str(cardId)))
-    pass
-
-    def getCards(self):
-        """
-        Metoda pobierająca z bazy dane o kartach
-        :return: lista dostepnych kart
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM CARDS")
-        res = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        return res
-
-    def getUnknownCards(self):
-        """
-        Metoda pobierająca z bazy dane o użyciu nieznanych systemowi kart
-        :return: lista logów dotyczących kart, ktorych nie ma w systemie
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute("SELECT CARD_ID, TERMINAL_ID, TIME FROM UNKNOWN_CARDS")
-        logs = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        if len(logs) > 0:
-            terms = self.getTerminals()
-            map = dict()
-            for i in range(0, len(terms)):
-                map.update({terms[i][0]: terms[i][1]})
-            for i in range(0, len(logs)):
-                logs[i] = (logs[i][0], map.get(logs[i][1]), logs[i][2])
-            return logs
-        else:
-            return None
-
-    def __getEmployeeCardIds(self, pesel):
-        """
-        Metoda pobierająca z bazy karty należące do danego pracownika
-        :param pesel: pesel pracownika
-        :return: lista kart pracownika lub None, jesli nie posiada zadnych kart
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cardIds = cursor.execute("SELECT CARD_ID FROM CARDS WHERE EMPLOYEE_PESEL = ?", (pesel,)).fetchall()
-        cursor.close()
-        connection.close()
-        if len(cardIds) > 0:
-            return cardIds
-        else:
-            return None
-
-    def generateReport(self, pesel):
-        """
-        Metoda pobierająca dane z bazy do raportu czasu pracy pracownika
-        :param pesel: pesel pracownika
-        :return: lista logów kart pracownika lub None, jesli pracownik nie istnieje lub logi są puste
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        if self.getEmployee(pesel) is not None:
-            empId = pesel
-        else:
-            empId = cursor.execute("SELECT 1 FROM EMPLOYEES_REMOVED WHERE PESEL = ?", (pesel,)).fetchone()
-        if empId is not None:
-            cursor.execute("SELECT TERMINAL_ID, TIME FROM LOGS WHERE EMPLOYEE_PESEL = ?", (pesel,))
-            logs = cursor.fetchall()
-            cursor.close()
-            connection.close()
-            if len(logs) > 0:
-                terms = self.getTerminals()
-                map = dict()
-                for i in range(0, len(terms)):
-                    map.update({terms[i][0]: terms[i][1]})
-                for i in range(0, len(logs)):
-                    logs[i] = (map.get(logs[i][0]), logs[i][1])
-                return logs
-            else:
-                return None
-        else:
-            return None
-    pass
-
-    def getCard(self, cardId):
-        """
-        Metoda sprawdzająca czy karta istnieje w systemie
-        :param cardId:
-        :return: id karty i nr pracownika lub none, jesli karta nie istnieje
-        """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        res = cursor.execute("SELECT * FROM CARDS WHERE CARD_ID = ?", (str(cardId),)).fetchone()
-        return res
-    pass
-
-    def logCard(self, cardId, localisation):
-        """
-        metoda zapisująca czas użycia karty w terminalu i dane o karcie
-        :param cardId: nr karty
-        :param localisation: lokalizacja(nazwa) terminala
+        Metoda wypisująca na ekranie menu aplikacji
         :return: void
         """
-        localisation = localisation.upper().strip()
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        res = self.getCard(cardId)
-        timeStr = datetime.now().strftime("%y/%m/%d %H:%M:%S")
-        termId = cursor.execute("SELECT ID FROM TERMINALS WHERE LOCALISATION = ?", (localisation,)).fetchone()
-        if res is not None:  # jesli karta w ogole istnieje w systemie
-            empId = cursor.execute("SELECT EMPLOYEE_PESEL FROM CARDS WHERE CARD_ID = ?", (str(cardId),)).fetchone()
-            if empId is not None and termId is not None:  # jesli pracownik i terminal istnieje to dopisz, jak karta istnieje ale nie ma pracownika to nie wpisuj nic, bo nie ma sensu
-                cursor.execute("INSERT INTO LOGS(TERMINAL_ID, EMPLOYEE_PESEL, TIME) VALUES(?, ?, ?)", (termId[0], empId[0], timeStr))
-        else:
-            if termId is not None:  # jesli karta nie istnieje w systemie a została użyta
-                cursor.execute("INSERT INTO UNKNOWN_CARDS(CARD_ID, TERMINAL_ID, TIME) VALUES(?, ?, ?)", (str(cardId), termId[0], timeStr))
-        connection.commit()
-        cursor.close()
-        connection.close()
+        optionsTemp = self.__options.copy()
+        optionsTemp[self.__curInd] = ("==>" + optionsTemp[self.__curInd][0], optionsTemp[self.__curInd][1])
+        print("Zmień opcje strzałkami góra/doł. Zatwierdź strzałką w prawo. Aby wyjśc wcisnij Esc")
+        for i in range(0, len(optionsTemp)):
+            print(optionsTemp[i][0])
     pass
 
-    def __removeHelp(self, str, args):
+    def start(self):
         """
-        metoda pomocnicza do usuwania danych z bazy
-        :param str: SQL string
-        :param args: argumenty klauzul SQL stringa
-        :return: True jesli coś usunięto, False jeśli nie
+        Metoda rozpoczynająca prace aplikacji
+        :return:
         """
-        connection = sqlite3.connect(self.__dbname)
-        cursor = connection.cursor()
-        cursor.execute(str, args)
-        connection.commit()
-        res = (cursor.rowcount > 0)
-        cursor.close()
-        connection.close()
-        return res
+        self.__connectToBroker()
+        self.__isRunning = True
+        if not (self.__listener.is_alive()):
+            self.__listener.start()
+        clear()
+        self.__printMenu()
+        self.__main()
+    pass
 
+    def stop(self):
+        self.__disconectFromBroker()
+        self.__listener.stop()
+        self.__isRunning = False
+
+    def __connectToBroker(self):
+        self.__client.connect(self.__broker)
+        self.__client.on_message = self.__processMessage
+        self.__client.subscribe(TOPIC)
+        self.__client.loop_start()
+    pass
+
+    def __disconectFromBroker(self):
+        self.__client.unsubscribe(TOPIC)
+        self.__client.loop_stop()
+        self.__client.disconnect(self.__broker)
+
+    def __processMessage(self, client, userdata, message):
+        # Decode message.
+        message_decoded = (str(message.payload.decode("utf-8"))).split(";")
+        # Print message to console.
+
+        self.__dbserver.logCard(message_decoded[0], message_decoded[1])
+
+    def __menuUp(self):
+        """
+        Metoda przesuwająca wybór opcji o 1 w góre
+        :return: void
+        """
+        if self.__curInd == 0:
+            self.__curInd = len(self.__options) - 1
+        else:
+            self.__curInd -= 1
+    pass
+
+    def __menuDown(self):
+        """
+        Metoda przesuwająca wybór opcji o 1 w dol
+        :return:
+        """
+        if self.__curInd == len(self.__options) - 1:
+            self.__curInd = 0
+        else:
+            self.__curInd += 1
+    pass
+
+    def __choose(self):
+        """
+        Metoda wykonująca funkcje skorelowaną z wybraną przez użytkownika opcją
+        :return:
+        """
+        self.__listener.stop()
+        self.__acceptKeyboard = False
+        function = self.__options[self.__curInd][1]
+        clear()
+        flushInput()
+        function()
+        self.__printMenu()
+        self.__acceptKeyboard = True
+        self.__listener = Listener(on_press=self.__on_press, on_release=self.__on_release)
+        self.__listener.setDaemon(True)
+        if not (self.__listener.is_alive()):
+            self.__listener.start()
+        time.sleep(0.01)
+    pass
+
+    def __addEmployee(self):
+        """
+        Metoda do dodawania nowego użytkownika
+        :return:
+        """
+        pesel = input("Podaj pesel pracownika... ")
+        name = input("Podaj imię pracownika... ")
+        surname = input("Podaj nazwisko pracownika... ")
+        if pesel.isnumeric() and name.isalpha() and surname.isalpha():
+            res = self.__dbserver.addEmployee(pesel, name, surname)
+            if res:
+                print(f"Dodano pracownika {name} {surname}")
+            else:
+                print("Błąd, nie dodano pracownika. Prawdopodobnie pracownik już istnieje")
+        else:
+            print("Błędne dane")
+    pass
+
+    def __removeEmployee(self):
+        """
+        Metoda do usuwania użytkownika
+        :return:
+        """
+        pesel = input("Podaj pesel pracownika... ")
+        if pesel.isnumeric():
+            res = self.__dbserver.removeEmployee(pesel)
+            if res:
+                print(f"Usunięto pracownika")
+            else:
+                print("Błąd, nie usunięto pracownika. Prawdopodobnie pracownik nie istnieje")
+        else:
+            print("Błędny pesel")
+
+    pass
+
+    def __addTerminal(self):
+        """
+        Metoda do dodawania terminala
+        :return:
+        """
+        terminal = input("Podaj nazwę terminala... ")
+        res = self.__dbserver.addTerminal(terminal)
+        if res:
+            print(f"Dodano terminal {terminal}")
+        else:
+            print(f"Błąd, nie dodano terminala {terminal}. Prawdopodobnie terminal już istnieje")
+    pass
+
+    def __removeTerminal(self):
+        """
+        Metoda do usuwania terminala
+        :return:
+        """
+        terminal = input("Podaj nazwę terminala... ")
+        res = self.__dbserver.removeTerminal(terminal)
+        if res:
+            print(f"Usunięto terminal {terminal}")
+        else:
+            print(f"Błąd, nie usunięto terminala {terminal}. Prawdopodobnie terminal nie istnieje")
+        pass
+
+    def __addCardWAss(self):
+        """
+        Metoda dodająca karte do systemu bez przypisywania jej do pracownika
+        :return:
+        """
+        cardId = input("Podaj numer karty... ")
+        if cardId.isnumeric():
+            res = self.__dbserver.addCard(cardId)
+            if res:
+                print(f"Dodano nową kartę o numerze {str(cardId)}")
+            else:
+                print(f"Karta o numerze {str(cardId)} już istnieje")
+        else:
+            print("Błąd w numerze karty")
+    pass
+
+    def __removeCard(self):
+        """
+        metoda usuwająca karte z systemu
+        :return:
+        """
+        cardId = input("Podaj numer karty... ")
+        if cardId.isnumeric():
+            res = self.__dbserver.removeCard(cardId)
+            if res:
+                print("Usunięto kartę o numerze ", cardId)
+            else:
+                print("Brak w systemie karty o numerze ", cardId)
+        else:
+            print("Błąd w numerze karty")
+
+    def __assignCard(self):
+        """
+        Metoda do przypisania karty danemu pracownikowi
+        :return:
+        """
+        flushInput()
+        pesel = input("Podaj pesel pracownika... ")
+        cardId = input("Podaj numer karty... ")
+        if cardId.isnumeric() and pesel.isnumeric():
+            res = self.__dbserver.assignCard(cardId, pesel)
+            if res == 0:
+                print(f"Karta o numerze {str(cardId)} przypisana")
+            elif res == -1:
+                print("Karta jest już przypisana do tego pracownika")
+            elif res == -2:
+                print("Karta należy do innego pracownika"),
+            elif res == -3:
+                flushInput()
+                ans = input(f"\nKarta o numerze {str(cardId)} nie istnieje, czy chcesz ją dodać?[t/n]... ")
+                if ans.upper() == "T":
+                    res = self.__dbserver.addCard(cardId)
+                    if res:
+                        flushInput()
+                        ans = input("\nKarta dodana, przypisać pracownika?[t/n]... ")
+                        if ans.upper() == "T":
+                            res = self.__dbserver.assignCard(cardId, pesel)
+                            if res == 0:
+                                print("Karta przypisana")
+                            else:
+                                print("Niezidentyfikowany błąd")
+                    else:
+                        print("Wystąpił błąd. Sprawdź czy masz uprawienia do edycji plików")
+            elif res == -4:
+                flushInput()
+                ans = input(f"\nPracownik o peselu {pesel} nie istnieje, czy chcesz go dodać?[t/n]... ")
+                if ans.upper() == "T":
+                    name = input("Podaj imię pracownika... ")
+                    surname = input("Podaj nazwisko pracownika... ")
+                    res = self.__dbserver.addEmployee(pesel, name, surname)
+                    if res:
+                        print("Pracownik dodany")
+                    else:
+                        print("Nieznany błąd")
+                else:
+                    print("\nRezygnacja")
+        else:
+            print("Błąd w numerze karty lub peselu")
+    pass
+
+    def __removeCardAssignment(self):
+        """
+        Metoda do usuwania przypisania karty do pracownika
+        :return:
+        """
+        cardId = input("Podaj numer karty... ")
+        if cardId.isnumeric():
+            res = self.__dbserver.removeCardAssignment(cardId)
+            if res:
+                print(f"Przypisanie karty o numerze {str(cardId)} zresetowane")
+            else:
+                print(f"Błąd, karta o numerze {str(cardId)} nie istnieje")
+            pass
+        else:
+            print("Błąd w numerze karty")
+
+    def __dateSubs(self, dateStr1, dateStr2):
+        """
+        Metoda odejmująca od siebie 2 daty sformatowane w string o konkretnym formacie
+        :param dateStr1: data1 - odjemna
+        :param dateStr2: data2 - odjemnik
+        :return: liczba godzin między dwiema datami
+        """
+        start = datetime.strptime(dateStr2, "%y/%m/%d %H:%M:%S")
+        end = datetime.strptime(dateStr1, "%y/%m/%d %H:%M:%S")
+        delta = end - start
+        return delta  # .total_seconds()/3600
+
+    def __generateReport(self):
+        """
+        Metoda do generowania raportu pracy pracownika
+        :return:
+        """
+        print("Generowanie raportu...")
+        pesel = input("Podaj pesel pracownika... ")
+        if pesel.isnumeric():
+            logs = self.__dbserver.generateReport(pesel)
+            if logs is not None:
+                empData = self.__dbserver.getEmployee(pesel)
+                timeStr = datetime.now().strftime("%y.%m.%d godz. %H.%M.%S")
+                fileName = "raport_prac_" + empData[1] + "_" + empData[2] + "_" + timeStr + ".csv"
+                with open(fileName, "w+", encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    writer.writerow(("Terminal", "Czas wejścia", "Czas wyjścia", "Czas pracy"))
+                    for i in range(0, len(logs), 2):
+                        if i+1 < len(logs):
+                            writer.writerow((logs[i][0], logs[i][1], logs[i+1][1], self.__dateSubs(logs[i+1][1], logs[i][1])))
+                        else:
+                            writer.writerow((logs[i][0], logs[i][1], "---", "---"))
+                print("Raport wygenerowany do pliku: "+fileName)
+            else:
+                print("Brak raportu do wygenerowania")
+        else:
+            print("Błąd w peselu")
+    pass
+
+    def __printEmployees(self):
+        """
+        Metoda wypisująca dostepnych pracowników
+        :return:
+        """
+        li = self.__dbserver.getEmployees()
+        if len(li) != 0:
+            for i in range(0, len(li)):
+                print(li[i])
+        else:
+            print("Brak pracowników")
+    pass
+
+    def __printTerminals(self):
+        """
+        Metoda wypisująca dostępne terminale
+        :return:
+        """
+        li = self.__dbserver.getTerminals()
+        if len(li) != 0:
+            for i in range(0, len(li)):
+                print(li[i])
+        else:
+            print("Brak terminali")
+    pass
+
+    def __printCards(self):
+        """
+        Metoda wypisująca wszystkie dostępne w systemie karty
+        :return:
+        """
+        li = self.__dbserver.getCards()
+        if len(li) != 0:
+            for i in range(0, len(li)):
+                print(li[i])
+        else:
+            print("Brak kart")
+
+    def __genRepUnkCards(self):
+        """
+        Metoda do generowania raportu użycia kart, których nie ma w systemie
+        :return:
+        """
+        logs = self.__dbserver.getUnknownCards()
+        if logs is not None:
+            timeStr = datetime.now().strftime("%y.%m.%d godz. %H.%M.%S")
+            fileName = "report_unknown_cards_" + timeStr + ".csv"
+            with open(fileName, "w+", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(("ID karty", "Terminal", "Zarejestrowany czas"))
+                for i in range(0, len(logs)):
+                    writer.writerow((logs[i][0], logs[i][1], logs[i][2]))
+            print("Raport wygenerowany do pliku: " + fileName)
+        else:
+            print("Brak raportu do wygenerowania")
+
+    def __on_press(self, key):
+        """
+        Metoda wykonywana przy nacisnieciu przycisku na klawiaturze
+        :param key: przycisk wcisniety
+        :return:
+        """
+        if self.__acceptKeyboard:
+            if ACCEPTED_KEYS.__contains__(key):
+                self.__keys.append(key)
+    pass
+
+    def __on_release(self, key):
+        """
+        Metoda waykonywana przy zwalnianiu przycisniecia przycisku
+        :param key: przycisk ktory byl wcisniety
+        :return:
+        """
+        return True
+    pass
+
+    def __main(self):
+        """
+        Główna metoda programu. BusyLoop. Obsługuje kolejne przycisniecia przycisku i logi kart
+        :return:
+        """
+        while self.__isRunning:
+            try:
+                self.__processNextKey()
+                time.sleep(0.001)
+            except Exception as ex:
+                print(ex)
+        pass
+    pass
+
+    def __processNextKey(self):
+        """
+        Metoda obsługująca kolejne nacisniecia przycisków
+        :return:
+        """
+        if len(self.__keys) > 0:
+            key = self.__keys[0]
+            if not self.__enterClicked:
+                if key == Key.up:
+                    self.__menuUp()
+                    clear()
+                    self.__printMenu()
+                elif key == Key.down:
+                    self.__menuDown()
+                    clear()
+                    self.__printMenu()
+                elif key == Key.esc:
+                    self.stop()
+                    quit(0)
+                elif key == Key.right:
+                    self.__enterClicked = True
+                    flushInput()
+                    print("Opcja: " + self.__options[self.__curInd][0][1:] + "- Potwierdź, wciskając ponownie strzałkę w prawo")
+            else:
+                if key == Key.right:
+                    self.__choose()
+                else:
+                    flushInput()
+                    clear()
+                    self.__printMenu()
+                    print("\nRezygnacja")
+                self.__enterClicked = False
+            self.__keys.pop(0)
+    pass
 
 
 pass
+
