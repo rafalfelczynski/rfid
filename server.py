@@ -39,10 +39,12 @@ def flushInput():
 ACCEPTED_KEYS = [Key.up, Key.down, Key.esc, Key.right]
 TOPIC = "cardId"
 
+LOGIN = "server"
+
 
 class Server:
 
-    def __init__(self, dbserver, broker):
+    def __init__(self, dbserver, broker, port):
         """
         konstruktor klasy
         :param dbserver: obiekt klasy Server
@@ -70,6 +72,8 @@ class Server:
         self.__keys = list()
         self.__client = mqtt.Client()
         self.__broker = broker
+        self.__port = port
+        self.__condition = threading.Event()
     pass
 
     def __printMenu(self):
@@ -90,36 +94,72 @@ class Server:
         :return:
         """
         self.__connectToBroker()
-        self.__isRunning = True
-        if not (self.__listener.is_alive()):
-            self.__listener.start()
-        clear()
-        self.__printMenu()
-        self.__main()
+        while not self.__client.is_connected():
+            password = input("Podaj hasło...")
+            self.__condition.clear()
+            self.__tryToConnectUser(LOGIN, password)
+            self.__condition.wait()
+            if not self.__client.is_connected():
+                print("Błędny login lub hasło")
+        if self.__client.is_connected():
+            self.__client.on_message = self.__processMessage
+            self.__client.subscribe(TOPIC)
+            self.__isRunning = True
+            if not (self.__listener.is_alive()):
+                self.__listener.start()
+            clear()
+            self.__printMenu()
+            self.__main()
+        else:
+            print("Błąd brokera. Sprawdz czy serwis jest włączony")
     pass
 
     def stop(self):
+        """
+        metoda kończąca prace serwera
+        :return:
+        """
         self.__disconectFromBroker()
         self.__listener.stop()
         self.__isRunning = False
 
     def __connectToBroker(self):
-        self.__client.connect(self.__broker)
-        self.__client.on_message = self.__processMessage
-        self.__client.subscribe(TOPIC)
+        """
+        metoda łącząca serwer z brokerem mosquitto
+        :return:
+        """
+        self.__client.tls_set("ca.crt")
+        self.__client.on_connect = self.__on_connect
+        self.__client.reconnect_delay_set(0.5, 0.5)
+        self.__client.connect(self.__broker, self.__port)
         self.__client.loop_start()
     pass
 
+    def __tryToConnectUser(self, login, password):
+        self.__client.username_pw_set(username=login, password=password)
+
+    def __on_connect(self, client, userdata, flags, rc):
+        self.__condition.set()
+
     def __disconectFromBroker(self):
+        """
+        metoda rozłączająca serwer od brokera mosquitto
+        :return:
+        """
         self.__client.unsubscribe(TOPIC)
         self.__client.loop_stop()
         self.__client.disconnect(self.__broker)
 
     def __processMessage(self, client, userdata, message):
-        # Decode message.
+        """
+        metoda przetwarzająca otrzymaną od brokera wiadomość
+        :param client: klient
+        :param userdata: dane
+        :param message: wiadomosc od brokera
+        :return:
+        """
         message_decoded = (str(message.payload.decode("utf-8"))).split(";")
-        # Print message to console.
-
+        print("id karty", message_decoded[0], "terminal", message_decoded[1])
         self.__dbserver.logCard(message_decoded[0], message_decoded[1])
 
     def __menuUp(self):

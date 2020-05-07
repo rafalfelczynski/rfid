@@ -3,11 +3,12 @@
 import sys
 
 import client
-broker = "localhost"
+broker = "rafal-MS-7B38"
+port = 8883
 
 
 def main():
-    cli = client.Client(broker, sys.argv[1], sys.argv[2])
+    cli = client.Client(broker, port, sys.argv[1], sys.argv[2])
     cli.start()
 
 

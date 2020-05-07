@@ -11,17 +11,25 @@ ACCEPTED_KEYS = [Key.end, KeyCode.from_char("-"), KeyCode.from_char("=")]
 
 class Client(threading.Thread):
 
-    def __init__(self, broker, terminal, char):  #####
+    def __init__(self, broker, port, terminal, char):  #####
+        """
+        konstruktor klasy klient
+        :param broker: broker mosquitto, do którego będą wysyłane komunikaty
+        :param terminal: nazwa terminala, który obsługuje klient
+        :param char: znak na klawiaturze do nacisniecia jako symulacja sczytania karty
+        """
         super().__init__()
-        self.isRunning = False
-        self.readCards = deque()
-        self.keys = deque()
-        self.broker = broker
-        self.terminal = terminal
-        self.listener = Listener(on_press=self.__on_press, on_release=self.__on_release)
-        self.listener.setDaemon(True)
-        self.client = mqtt.Client()
-        self.char = char  ## char tylko na potrzeby braku raspberry pi
+        self.__isRunning = False
+        self.__readCards = deque()
+        self.__keys = deque()
+        self.__broker = broker
+        self.__port = port
+        self.__terminal = terminal
+        self.__listener = Listener(on_press=self.__on_press, on_release=self.__on_release)
+        self.__listener.setDaemon(True)
+        self.__client = mqtt.Client()
+        self.__char = char  ## char tylko na potrzeby braku raspberry pi
+        self.__condition = threading.Event()
     pass
 
     def __readCard(self):
@@ -30,15 +38,15 @@ class Client(threading.Thread):
         :return:
         """
         cardId = random.randint(0, 5)
-        self.readCards.append(cardId)
+        self.__readCards.append(cardId)
 
     def __logCard(self):
         """
         Metoda obslugująca zczytywaną karte
         :return:
         """
-        if len(self.readCards) > 0:
-            cardId = self.readCards.popleft()
+        if len(self.__readCards) > 0:
+            cardId = self.__readCards.popleft()
             self.sendCardIdToServer(cardId)
     pass
 
@@ -47,56 +55,117 @@ class Client(threading.Thread):
         Metoda obsługująca kolejne nacisniecia przycisków
         :return:
         """
-        if len(self.keys) > 0:
-            key = self.keys.popleft()
+        if len(self.__keys) > 0:
+            key = self.__keys.popleft()
             if key == Key.end:
                 self.stop()
                 quit(0)
-            elif key == KeyCode.from_char(self.char):  ###############
+            elif key == KeyCode.from_char(self.__char):  ###############
                 self.__readCard()
     pass
 
     def __on_press(self, key):
+        """
+        metoda listenera klawiatury wykonywana po wcisnieciu klawisza
+        :param key: klawisz wcisniety
+        :return:
+        """
         if ACCEPTED_KEYS.__contains__(key):
-            self.keys.append(key)
+            self.__keys.append(key)
     pass
 
     def __on_release(self, key):
+        """
+        metoda listenera wykonywana przy zwolnieniu klawisza
+        :param key: klawisz
+        :return:
+        """
         return True
     pass
 
     def __connectToBroker(self):
-        self.client.connect(self.broker)
+        """
+        metoda łącząca klienta z brokerem
+        :return:
+        """
+        self.__client.tls_set("ca.crt")
+        self.__client.on_connect = self.__on_connect
+        self.__client.reconnect_delay_set(0.5, 0.5)
+        self.__client.connect(self.__broker, self.__port)
+        self.__client.loop_start()
     pass
 
+    def __tryToConnectUser(self, login, password):
+        self.__client.username_pw_set(username=login, password=password)
+
+    def __on_connect(self, client, userdata, flags, rc):
+        self.__condition.set()
+
     def __disconectFromBroker(self):
-        self.client.disconnect(self.broker)
+        """
+        metoda kończąca połączenie z brokerem
+        :return:
+        """
+        self.__client.disconnect(self.__broker)
 
     def sendCardIdToServer(self, cardId):
-        self.client.publish(TOPIC, str(cardId) + ";" + self.terminal)
+        """
+        metoda wysyłająca numer karty do brokera
+        :param cardId: nr sczytanej karty
+        :return:
+        """
+        self.__client.publish(TOPIC, str(cardId) + ";" + self.__terminal)
 
     def __main(self):
-        while self.isRunning:
+        """
+        główna metoda klienta, pętla obsługująca wcisniete klawisze oraz sczytane karty
+        :return:
+        """
+        while self.__isRunning:
             self.__processNextKey()
             self.__logCard()
             time.sleep(0.001)
         pass
 
     def start(self):
-        print("Czytnik został aktywowany")
+        """
+        metoda do rozpoczęcia pracy klienta. Startuje nowy wątek
+        :return:
+        """
         self.__connectToBroker()
-        self.isRunning = True
-        super().start()
-        if not self.listener.is_alive():
-            self.listener.start()
+        while not self.__client.is_connected():
+            login = input("Podaj login...")
+            password = input("Podaj hasło...")
+            self.__condition.clear()
+            self.__tryToConnectUser(login, password)
+            self.__condition.wait()
+            if not self.__client.is_connected():
+                print("Błędny login lub hasło")
+        if self.__client.is_connected():
+            self.__isRunning = True
+            super().start()
+            if not self.__listener.is_alive():
+                self.__listener.start()
+            print("Czytnik został aktywowany")
+            pass
+        else:
+            print("Błąd brokera. Sprawdz czy serwis jest włączony")
         pass
 
     def stop(self):
-        self.isRunning = False
+        """
+        metoda kończąca prace klienta
+        :return:
+        """
+        self.__isRunning = False
         self.__disconectFromBroker()
-        self.listener.stop()
+        self.__listener.stop()
 
     def run(self) -> None:
+        """
+        metoda którą wykonuje wystartowany wątek
+        :return:
+        """
         self.__main()
         pass
 
